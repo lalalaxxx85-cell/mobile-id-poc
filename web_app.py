@@ -12,14 +12,18 @@ from PIL import Image, ImageDraw
 from google import genai
 from google.genai import types
 
-# 1. 페이지 설정
+# 1. 페이지 기본 설정
 st.set_page_config(page_title="AI 모바일 신분증 Visual PoC", layout="wide")
 st.title("🛡️ AI 최소정보 선택 인증 & Dynamic QR 모바일 신분증 PoC")
 st.caption("2026 모바일신분증 아이디어 공모전 시각적 개념검증 시뮬레이터")
 
-# 2. API 키 로드
+# 2. API 키 로드 및 Client 초기화
 load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY")
+
+# Streamlit Secrets 또는 .env에서 키 읽기
+if not api_key and "GEMINI_API_KEY" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
 
 if not api_key:
     st.error(".env 파일 또는 Streamlit Secrets에 GEMINI_API_KEY가 설정되지 않았습니다.")
@@ -111,16 +115,27 @@ def run_ai_filter(request_prompt: str) -> MinimizationResult:
     except Exception:
         return fallback_local_minimization(request_prompt)
 
-# 5. [신규 추가] 시각적 Dynamic QR 및 4단계 가짜 패턴 이미지 생성 함수
-def generate_visual_qr(qr_token_str: str, time_tick: int, simulate_tamper: bool = False):
-    # 10초마다 시각적 보안 색상 테마 동적 변경 (동적 무작위 주기 변화 모사)
-    theme_idx = (time_tick // 10) % 3
+# 5. [핵심 개선] 5초 주기 동적 색상 & 가짜 패턴(Dummy Pattern) 생성을 포함한 QR 그리기 함수
+def generate_visual_qr(qr_token_str: str, current_sec: int, simulate_tamper: bool = False):
+    # 5초 간격으로 색상 테마 및 미세 보안 격자 무늬가 자동 교체됨
+    theme_cycle = (current_sec // 5) % 3
+    
     themes = [
-        {"fill": "#0A192F", "back": "#E6F0FA", "name": "시크릿 블루 보안 모드"},
-        {"fill": "#1B4332", "back": "#E8F5E9", "name": "세이프 그린 보안 모드"},
-        {"fill": "#3C096C", "back": "#F3E5F5", "name": "디지털 퍼플 보안 모드"}
+        {
+            "fill": "#0D47A1", "back": "#E3F2FD", "grid": "#90CAF9",
+            "name": "🎨 [테마 A] 네이비 & 수직 보안 격자 패턴",
+            "pattern_type": "vertical"
+        },
+        {
+            "fill": "#1B5E20", "back": "#E8F5E9", "name": "🎨 [테마 B] 에메랄드 & 사선 보안 무늬 패턴",
+            "grid": "#A5D6A7", "pattern_type": "diagonal"
+        },
+        {
+            "fill": "#4A148C", "back": "#F3E5F5", "name": "🎨 [테마 C] 디프 퍼플 & 크로스 도트 패턴",
+            "grid": "#CE93D8", "pattern_type": "dots"
+        }
     ]
-    theme = themes[theme_idx]
+    theme = themes[theme_cycle]
 
     qr = qrcode.QRCode(
         version=2,
@@ -131,43 +146,47 @@ def generate_visual_qr(qr_token_str: str, time_tick: int, simulate_tamper: bool 
     qr.add_data(qr_token_str)
     qr.make(fit=True)
 
-    # 기본 QR 이미지 생성
     img = qr.make_image(fill_color=theme["fill"], back_color=theme["back"]).convert("RGB")
     draw = ImageDraw.Draw(img)
     w, h = img.size
 
     if simulate_tamper:
-        # 동영상/캡처 재전송 복제본 시뮬레이션: 프레임 뭉개짐 및 오차 합성 패턴 표출
-        for y in range(0, h, 8):
+        # 동영상/캡처 재전송 시뮬레이션: 주사율 상 오차로 가짜 프레임과 빨간 뭉개짐선 발생
+        for y in range(0, h, 6):
             draw.line([(0, y), (w, y)], fill="#FF1744", width=2)
         draw.text((15, h//2 - 10), "⚠️ REPLAY ATTACK DETECTED", fill="#D50000")
-        mode_name = "❌ 부정사용 감지 (동영상 녹화/캡처본 스캔 오류)"
+        mode_name = "❌ 부정사용 감지 (동영상 녹화/캡처본 프레임 상 오차 노출)"
     else:
-        # 정상 모드: 눈에 띄지 않는 미세 4단계 가짜 패턴 (Dummy Frame Pattern) 격자 그리기
-        grid_color = "#BBDEFB" if theme_idx == 0 else "#C8E6C9"
-        for i in range(0, w, 20):
-            draw.line([(i, 0), (i, h)], fill=grid_color, width=1)
-            draw.line([(0, i), (w, i)], fill=grid_color, width=1)
+        # 정상 모드: 5초마다 패턴 무늬 자동 변경
+        if theme["pattern_type"] == "vertical":
+            for i in range(0, w, 15):
+                draw.line([(i, 0), (i, h)], fill=theme["grid"], width=1)
+        elif theme["pattern_type"] == "diagonal":
+            for i in range(-w, w, 15):
+                draw.line([(i, 0), (i + h, h)], fill=theme["grid"], width=1)
+        elif theme["pattern_type"] == "dots":
+            for x in range(5, w, 15):
+                for y in range(5, h, 15):
+                    draw.ellipse([x-2, y-2, x+2, y+2], fill=theme["grid"])
         mode_name = theme["name"]
 
-    return img, mode_name, theme["fill"]
+    return img, mode_name
 
 # 6. UI 시뮬레이터 화면 구성
-st.sidebar.header("⚙️ PoC 테스트 시나리오")
+st.sidebar.header("⚙️ PoC 시뮬레이션 제어")
+
+# 실시간 라이브 토글 스위치 (기본 켜짐)
+live_mode = st.sidebar.toggle("🔴 5초 주기 실시간 Dynamic QR 라이브 모드", value=True)
+
 scenario = st.sidebar.radio(
     "검증 상황 선택",
     ["편의점 주류 구매 (성인 확인)", "국가 자격시험장 입실 (수험생 확인)", "신분증 미소지자 현장 P2P 인쇄"]
 )
 
-# 세션 상태 초기화 (시간 동기화)
-if "qr_seed_time" not in st.session_state:
-    st.session_state.qr_seed_time = int(time.time())
-
-st.sidebar.markdown("---")
-if st.sidebar.button("🔄 QR 실시간 수동 파기 & 재생성"):
-    st.session_state.qr_seed_time = int(time.time())
-
-current_time = st.session_state.qr_seed_time
+# 현재 시간 초 계산
+now_sec = int(time.time())
+cycle_sec = 5
+time_left = cycle_sec - (now_sec % cycle_sec)
 
 if scenario == "편의점 주류 구매 (성인 확인)":
     prompt_input = "편의점 POS 단말기: 손님의 주류 구매를 위한 만 19세 이상 성인 여부(Pass/Fail) 확인 요청"
@@ -176,71 +195,77 @@ elif scenario == "국가 자격시험장 입실 (수험생 확인)":
 else:
     prompt_input = "국가자격시험 입실 창구: 수험생 확인 요청 후 현장 임시 신분증 인쇄 요청"
 
-st.subheader("1. AI 검증 요청 입력")
+st.subheader("1. AI 검증 요청 및 실시간 QR 모니터링")
 user_prompt = st.text_area("검증 단말기(POS/감독관 앱) 요청 문구", prompt_input, height=70)
 
-if st.button("🚀 AI 최소정보 필터링 & Dynamic QR 표출", type="primary"):
-    with st.spinner("AI 맥락 분석 및 보안 QR 패턴 동기화 중..."):
-        result = run_ai_filter(user_prompt)
-        clean_data = {k: v for k, v in result.filtered_data.model_dump().items() if v is not None}
-        
-        # QR 토큰 생성
-        dummy_hash = hashlib.sha256(f"{json.dumps(clean_data)}_{current_time}".encode()).hexdigest()[:16]
-        qr_token = f"DYN_QR_{dummy_hash}_{current_time}"
+# 세션에 필터링 결과 저장 (화면이 1초마다 자동 새로고침되어도 AI를 계속 다시 부르지 않도록 방지)
+if "last_prompt" not in st.session_state or st.session_state.last_prompt != user_prompt:
+    st.session_state.last_prompt = user_prompt
+    st.session_state.ai_result = run_ai_filter(user_prompt)
 
-    st.success("인증 준비 완료 (화면 노출 Zero 적용)")
+result = st.session_state.ai_result
+clean_data = {k: v for k, v in result.filtered_data.model_dump().items() if v is not None}
 
-    col1, col2 = st.columns([1, 1])
+# 5초 단위 주기성 암호화 토큰 생성
+seed_time = (now_sec // 5) * 5
+dummy_hash = hashlib.sha256(f"{json.dumps(clean_data)}_{seed_time}".encode()).hexdigest()[:16]
+qr_token = f"DYN_QR_{dummy_hash}_{seed_time}"
 
-    with col1:
-        st.markdown("### 📱 사용자 앱 화면 (Zero Exposure)")
-        st.caption("🔒 텍스트 개인정보 노출 Zero / 오직 보안 Dynamic QR만 표시")
+col1, col2 = st.columns([1, 1])
 
-        # 시각적 QR 생성
-        qr_img, mode_title, theme_color = generate_visual_qr(qr_token, current_time, simulate_tamper=False)
-        
-        # Streamlit 화면에 QR 이미지 출력
-        buf = io.BytesIO()
-        qr_img.save(buf, format="PNG")
-        st.image(buf.getvalue(), width=240)
+with col1:
+    st.markdown("### 📱 사용자 모바일 앱 화면 (Zero Exposure)")
+    st.caption("🔒 화면 노출 Zero 적용: 이름/주소 등 시각적 노출 차단, 오직 Dynamic QR만 생성")
 
-        # 동적 보안 상태 안내
-        st.markdown(f"**현재 보안 모드**: `{mode_title}`")
-        st.progress(70)
-        st.caption("⏱️ 30초 무작위 유효기간 적용 중 (시간 경과 시 QR 자동 파기)")
-        st.info(f"📢 **검증기 TTS 음성 피드백 (0.5초 이내)**: \"{result.tts_announcement}\"")
+    # 5초 마다 색상과 패턴이 달라지는 시각적 QR 렌더링
+    qr_img, mode_title = generate_visual_qr(qr_token, now_sec, simulate_tamper=False)
+    
+    buf = io.BytesIO()
+    qr_img.save(buf, format="PNG")
+    st.image(buf.getvalue(), width=260)
 
-    with col2:
-        st.markdown("### 🖥️ 검증 단말기 수신 & 보안 검증")
-        
-        tab_a, tab_b = st.tabs(["✅ 정상 실물 스캔", "❌ 캡처/동영상 재전송 스캔"])
-        
-        with tab_a:
-            st.json({
-                "인식된_맥락": result.context_type,
-                "검증_목적": result.verified_purpose,
-                "수신된_최소정보_패킷": clean_data,
-                "4단계_Dummy_Pattern_검증": "PASSED (디스플레이 주사율 및 미세 프레임 일치)",
-                "개인정보_유출_건수": "0건 (불필요 정보 100% 차단)"
-            })
+    # 카운트다운 타이머 및 현재 패턴 표시
+    st.markdown(f"**실시간 보안 상태**: `{mode_title}`")
+    st.progress((cycle_sec - time_left) / cycle_sec)
+    st.warning(f"⏱️ **색상/가짜 패턴(Dummy) 갱신까지**: `{time_left}초` 남음 (5초 주기 파기)")
+    st.info(f"📢 **검증 단말기 TTS 음성 출력 (0.5초 이내)**: \"{result.tts_announcement}\"")
 
-        with tab_b:
-            tampered_img, _, _ = generate_visual_qr(qr_token, current_time, simulate_tamper=True)
-            t_buf = io.BytesIO()
-            tampered_img.save(t_buf, format="PNG")
-            st.image(t_buf.getvalue(), width=200, caption="카메라 녹화/캡처 스캔 시 프레임 뭉개짐 감지")
-            st.error("🚫 [부정 사용 차단 완료] 동영상 촬영 및 스크린샷 캡처본 스캔 감지 (Replay Attack 방지 성공)")
-
-    if scenario == "신분증 미소지자 현장 P2P 인쇄":
-        st.markdown("---")
-        st.markdown("### 🖨️ 현장 P2P 무선 보안 임시 신분증 즉시 인쇄")
-        auth_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        st.success("BLE/Wi-Fi Direct P2P 암호화 연동 성공 - 15초 이내 인쇄 완료")
+with col2:
+    st.markdown("### 🖥️ 검증 단말기 수신 & 보안 대조 결과")
+    
+    tab_a, tab_b = st.tabs(["✅ 정상 실물 스캔 (인증 성공)", "❌ 동영상/캡처 재전송 (인증 거절)"])
+    
+    with tab_a:
         st.json({
-            "서식": "법적 효력 임시 신분증 (당일용)",
-            "발급_대상": clean_data.get("name", "홍길동"),
-            "모바일_인증_타임스탬프": auth_time,
-            "종이_인쇄_타임스탬프": auth_time,
-            "위변조_방지_특수_각인": "COPY_PROTECTION_VOID_PATTERN_EMBEDDED (복사 시 VOID 문구 노출)",
-            "상태": "보안 무선 프린터 전송 완료"
+            "인식된_맥락": result.context_type,
+            "검증_목적": result.verified_purpose,
+            "수신된_최소정보_패킷": clean_data,
+            "4단계_Dummy_Pattern_대조": "PASSED (5초 주기 동기화 패킷 및 보안 프레임 일치)",
+            "개인정보_유출_건수": "0건 (성인 여부 외 정보 완전 차단)"
         })
+
+    with tab_b:
+        tampered_img, _ = generate_visual_qr(qr_token, now_sec, simulate_tamper=True)
+        t_buf = io.BytesIO()
+        tampered_img.save(t_buf, format="PNG")
+        st.image(t_buf.getvalue(), width=220, caption="녹화본 스캔 시 프레임 상 오차 및 모아레 왜곡 노출")
+        st.error("🚫 [부정 사용 차단 완료] 동영상 촬영 및 캡처본 스캔 감지 (Replay Attack 원천 차단)")
+
+if scenario == "신분증 미소지자 현장 P2P 인쇄":
+    st.markdown("---")
+    st.markdown("### 🖨️ 현장 P2P 무선 보안 임시 신분증 즉시 인쇄")
+    auth_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    st.success("BLE/Wi-Fi Direct P2P 암호화 연동 성공 - 15초 이내 인쇄 완료")
+    st.json({
+        "서식": "법적 효력 임시 신분증 (당일용)",
+        "발급_대상": clean_data.get("name", "홍길동"),
+        "모바일_인증_타임스탬프": auth_time,
+        "종이_인쇄_타임스탬프": auth_time,
+        "위변조_방지_특수_각인": "COPY_PROTECTION_VOID_PATTERN_EMBEDDED (복사 시 VOID 문구 노출)",
+        "상태": "보안 무선 프린터 전송 완료"
+    })
+
+# 실시간 라이브 갱신 루프 (1초마다 자동 새로고침하여 5초 주기 색상/패턴 변화를 눈으로 보여줌)
+if live_mode:
+    time.sleep(1)
+    st.rerun()
