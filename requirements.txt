@@ -2,3 +2,5 @@ google-genai
 python-dotenv
 pydantic
 streamlit
+qrcode
+pillow
